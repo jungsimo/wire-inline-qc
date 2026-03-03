@@ -1,0 +1,13 @@
+kafka:
+  bootstrap_servers: "localhost:9092"
+
+topics:
+  raw: "1031103_1000"
+  alarms: "1031103_801"
+  corr: "1031103_corr"
+  profiles: "1031103_profiles"
+  profiles_nio: "1031103_profiles_nio"
+
+consumer:
+  auto_offset_reset: "earliest"
+  enable_auto_commit: false
