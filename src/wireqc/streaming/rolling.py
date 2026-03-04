@@ -57,3 +57,43 @@ class RollingPearson:
         if den_x <= 0 or den_y <= 0:
             return None
         return num / math.sqrt(den_x * den_y)
+
+#---------------------------------------------------
+
+@dataclass
+class RollingMeanStd:
+    maxlen: int
+    q: deque = None
+    n: int = 0
+    s: float = 0.0
+    ss: float = 0.0  # sum of squares
+
+    def __post_init__(self):
+        self.q = deque(maxlen=self.maxlen)
+
+    def add(self, x: float | None) -> None:
+        if x is None:
+            return
+        if len(self.q) == self.q.maxlen:
+            old = self.q.popleft()
+            self.n -= 1
+            self.s -= old
+            self.ss -= old * old
+        self.q.append(x)
+        self.n += 1
+        self.s += x
+        self.ss += x * x
+
+    def mean(self) -> float | None:
+        if self.n == 0:
+            return None
+        return self.s / self.n
+
+    def std(self) -> float | None:
+        if self.n < 2:
+            return None
+        mu = self.mean()
+        var = (self.ss - self.n * mu * mu) / (self.n - 1)  # sample variance
+        if var < 0:
+            var = 0.0
+        return math.sqrt(var)
