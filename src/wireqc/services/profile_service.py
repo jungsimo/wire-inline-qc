@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
@@ -18,6 +18,27 @@ def _parse_ts_iso(ts: str | None) -> datetime | None:
     except Exception:
         return None
 
+@dataclass
+class RunningMean:
+    n: int = 0
+    mean: float = 0.0
+
+    def update(self, x: float) -> float:
+        self.n += 1
+        self.mean += (x - self.mean) / self.n
+        return self.mean
+
+
+@dataclass
+class ProfileStats:
+    L1: RunningMean = field(default_factory=RunningMean)
+    L2: RunningMean = field(default_factory=RunningMean)
+    L3: RunningMean = field(default_factory=RunningMean)
+    L4: RunningMean = field(default_factory=RunningMean)
+
+    @property
+    def n(self) -> int:
+        return self.L1.n
 
 @dataclass
 class ProfileFSM:
@@ -122,6 +143,12 @@ class ProfileService(BaseStreamService):
         self.fsm_by_machine: dict[str, ProfileFSM] = {}
         self.profile_seq: dict[str, int] = {}
 
+        self.out_topic_nio = cfg["topics"]["profiles_nio"]
+
+        self.stats_by_machine: dict[str, ProfileStats] = {}
+        self.min_profiles_eval = 20  # erst ab N Profilen n.i.O. bewerten (Warmup)
+        self.tol_mm = 30.0
+
     def handle(self, rec: dict) -> Iterable[tuple[str, dict, str | None]]:
         mid = str(rec.get("machine_id") or "unknown")
         ts = _parse_ts_iso(rec.get("ts"))
@@ -150,7 +177,65 @@ class ProfileService(BaseStreamService):
             "profile_id": self.profile_seq[mid],
             **prof,
         }
-        return [(self.out_topic, event, mid)]
+        # --- n.i.O. Bewertung (Streaming) ---
+        stats = self.stats_by_machine.get(mid)
+        if stats is None:
+            stats = ProfileStats()
+            self.stats_by_machine[mid] = stats
+
+        # expected = laufender Mittelwert VOR Update (Warmup beachten)
+        expected = None
+        deviations = None
+        nio = False
+
+        if stats.n >= self.min_profiles_eval:
+            expected = {
+                "L1": stats.L1.mean,
+                "L2": stats.L2.mean,
+                "L3": stats.L3.mean,
+                "L4": stats.L4.mean,
+            }
+            deviations = {
+                "dL1": event["L1_plateau_mm"] - expected["L1"],
+                "dL2": event["L2_low_mm"] - expected["L2"],
+                "dL3": event["L3_rise_mm"] - expected["L3"],
+                "dL4": event["L4_fall_mm"] - expected["L4"],
+            }
+            nio = any(abs(d) > self.tol_mm for d in deviations.values())
+
+        # Mittelwerte jetzt mit aktuellem Profil updaten (Mean über alle erkannten Profile)
+        stats.L1.update(event["L1_plateau_mm"])
+        stats.L2.update(event["L2_low_mm"])
+        stats.L3.update(event["L3_rise_mm"])
+        stats.L4.update(event["L4_fall_mm"])
+
+        # optional fürs spätere Visualisieren/Debuggen:
+        event["nio"] = nio
+        event["profiles_seen"] = stats.n
+
+        outs = [(self.out_topic, event, mid)]
+
+        if nio:
+            nio_event = {
+                "ts": event["ts"],
+                "machine_id": event["machine_id"],
+                "profile_id": event["profile_id"],
+                "ring_id": event.get("ring_id"),
+                "wire_length_end_mm": event.get("wire_length_end_mm"),
+                "tol_mm": self.tol_mm,
+                "profiles_seen": stats.n,
+                "expected": expected,
+                "deviations": deviations,
+                "lengths": {
+                    "L1": event["L1_plateau_mm"],
+                    "L2": event["L2_low_mm"],
+                    "L3": event["L3_rise_mm"],
+                    "L4": event["L4_fall_mm"],
+                },
+            }
+            outs.append((self.out_topic_nio, nio_event, mid))
+
+        return outs
 
 
 def main():
