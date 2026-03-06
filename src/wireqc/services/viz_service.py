@@ -1,23 +1,31 @@
 from __future__ import annotations
+
+import argparse
 import time
 
 from wireqc.common.config import load_config
 from wireqc.io.kafka.consumer import KafkaJsonConsumer
 
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--offset", choices=["earliest", "latest"], default="latest")
+    ap.add_argument("--group", default="wireqc-viz")
+    args = ap.parse_args()
+
     cfg = load_config()
     bs = cfg["kafka"]["bootstrap_servers"]
 
     t_profiles = cfg["topics"]["profiles"]
-    t_nio = cfg["topics"]["profiles_nio"]
+    t_profiles_nio = cfg["topics"]["profiles_nio"]
 
     c = KafkaJsonConsumer(
         bootstrap_servers=bs,
-        group_id="wireqc-viz",
-        auto_offset_reset=cfg["consumer"]["auto_offset_reset"],
-        enable_auto_commit=cfg["consumer"]["enable_auto_commit"],
+        group_id=args.group,
+        auto_offset_reset=args.offset,
+        enable_auto_commit=False,
     )
-    c.subscribe([t_profiles, t_nio])
+    c.subscribe([t_profiles, t_profiles_nio])
 
     total_profiles = 0
     total_nio = 0
@@ -50,17 +58,17 @@ def main():
 
             if msg["topic"] == t_profiles:
                 total_profiles += 1
-            elif msg["topic"] == t_nio:
+            elif msg["topic"] == t_profiles_nio:
                 total_nio += 1
 
             now = time.time()
             if now - last_print >= 1.0:
-                print(f"[viz] profiles={total_profiles}  nio={total_nio}")
+                print("[viz] profiles={0}  nio={1}".format(total_profiles, total_nio))
                 last_print = now
 
-            c.commit(msg)
     finally:
         c.close()
+
 
 if __name__ == "__main__":
     main()

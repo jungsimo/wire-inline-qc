@@ -1,46 +1,80 @@
 import time
+import argparse
+from pathlib import Path
+
 from wireqc.common.config import load_config
-from wireqc.io.offline_loader import load_process_json
+from wireqc.io.offline_loader import iter_process_json
 from wireqc.io.kafka.producer import KafkaJsonProducer
 
+
 def main():
+    ap = argparse.ArgumentParser(description="Replay Producer (streaming JSONL, optional realtime pacing)")
+    ap.add_argument(
+        "--path",
+        default=None,
+        help="Optional input path. If omitted, prefers data/process_data.json if present, else .json.gz",
+    )
+    ap.add_argument("--progress-every", type=int, default=5000, help="Print progress every N messages")
+    ap.add_argument("--realtime", action="store_true", help="Send at ~10 Hz (sleep 0.1s)")
+    ap.add_argument("--sleep", type=float, default=None, help="Custom sleep per message, overrides --realtime")
+    ap.add_argument("--max-messages", type=int, default=None, help="Stop after N messages")
+    args = ap.parse_args()
+
     cfg = load_config()
     bs = cfg["kafka"]["bootstrap_servers"]
     topic = cfg["topics"]["raw"]
 
-    # --- Replay Input (.gz) ---
-    df_raw = load_process_json("data/process_data.json.gz")
+    if args.path is not None:
+        path = args.path
+    else:
+        path = "data/process_data.json" if Path("data/process_data.json").exists() else "data/process_data.json.gz"
 
-    # deterministisch: nach Time sortieren (wie realer Stream)
-    df_raw = df_raw.sort_values("Time")
+    if not Path(path).exists():
+        raise FileNotFoundError("Replay input not found: {0}".format(path))
+
+    print("[replay] using input: {0}".format(path))
 
     producer = KafkaJsonProducer(bs)
 
     sent = 0
     t0 = time.time()
+    last = t0
 
-    # Tipp: iterrows ist ok bei 864k; für speed könnte man itertuples nehmen.
-    for _, row in df_raw.iterrows():
-        msg = row.to_dict()
-
-        # Key: MachineId, damit Partitionierung stabil ist
+    for msg in iter_process_json(path):
         key = str(msg.get("MachineId", ""))
 
         producer.produce(topic=topic, value=msg, key=key)
         sent += 1
 
-        # Flush in Batches (wichtig, sonst wächst Buffer)
-        if sent % 5000 == 0:
-            producer.flush(2.0)
-            dt = time.time() - t0
-            print(f"sent={sent}  rate={sent/dt:.1f} msg/s")
+        if sent % 1000 == 0:
+            try:
+                producer._p.poll(0.0)
+            except Exception:
+                pass
 
-        # Wenn du wirklich 10Hz "Echtzeit" simulieren willst, entkommentieren:
-        # time.sleep(0.1)
+        if args.progress_every and sent % args.progress_every == 0:
+            producer.flush(2.0)
+            now = time.time()
+            rate = args.progress_every / max(now - last, 1e-9)
+            print("[replay] sent={0}  rate={1:.1f} msg/s  uptime={2:.1f}s".format(
+                sent, rate, now - t0
+            ))
+            last = now
+
+        sleep_s = args.sleep
+        if sleep_s is None and args.realtime:
+            sleep_s = 0.1
+
+        if sleep_s:
+            time.sleep(sleep_s)
+
+        if args.max_messages is not None and sent >= args.max_messages:
+            break
 
     producer.flush(10.0)
     dt = time.time() - t0
-    print(f"DONE. sent={sent}  avg_rate={sent/dt:.1f} msg/s")
+    print("[replay] DONE. sent={0}  avg_rate={1:.1f} msg/s".format(sent, sent / max(dt, 1e-9)))
+
 
 if __name__ == "__main__":
     main()

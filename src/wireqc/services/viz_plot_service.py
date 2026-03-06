@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
+import uuid
 from collections import deque
 
 import matplotlib.pyplot as plt
@@ -11,127 +12,256 @@ from wireqc.io.kafka.consumer import KafkaJsonConsumer
 from wireqc.io.processdata_parser import parse_raw_message
 
 
+def _make_ephemeral_group(base_group: str, suffix: str) -> str:
+    return "{0}-{1}-{2}-{3}".format(base_group, suffix, int(time.time()), uuid.uuid4().hex[:8])
+
+
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Inline QC – Live-Visualisierung direkt aus Kafka")
     ap.add_argument("--offset", choices=["earliest", "latest"], default="latest")
-    ap.add_argument("--group", default="wireqc-viz-plot")
-    ap.add_argument("--points", type=int, default=8000, help="ringbuffer size")
+    ap.add_argument("--group", default="wireqc-viz-dashboard")
+    ap.add_argument("--points", type=int, default=800)
+    ap.add_argument("--update-hz", type=float, default=5.0)
+    ap.add_argument("--downsample", type=int, default=1)
+    ap.add_argument("--drain-raw", type=int, default=100)
+    ap.add_argument("--drain-evt", type=int, default=50)
+    ap.add_argument("--x-window-mm", type=float, default=5000.0)
+    ap.add_argument("--xlim-update-every", type=int, default=3)
     args = ap.parse_args()
 
     cfg = load_config()
+
     bs = cfg["kafka"]["bootstrap_servers"]
     t_raw = cfg["topics"]["raw"]
     t_profiles = cfg["topics"]["profiles"]
-    t_nio = cfg["topics"]["profiles_nio"]
+    t_profiles_nio = cfg["topics"]["profiles_nio"]
 
-    c = KafkaJsonConsumer(
+    c_raw = KafkaJsonConsumer(
         bootstrap_servers=bs,
-        group_id=args.group,
+        group_id=_make_ephemeral_group(args.group, "raw"),
         auto_offset_reset=args.offset,
-        enable_auto_commit=cfg["consumer"]["enable_auto_commit"],
+        enable_auto_commit=False,
     )
-    c.subscribe([t_raw, t_profiles, t_nio])
+    c_raw.subscribe([t_raw])
 
-    N = args.points
-    x_len = deque(maxlen=N)
-    y_dia = deque(maxlen=N)
-    y_hard = deque(maxlen=N)
-    y_temp = deque(maxlen=N)
+    c_evt = KafkaJsonConsumer(
+        bootstrap_servers=bs,
+        group_id=_make_ephemeral_group(args.group, "evt"),
+        auto_offset_reset=args.offset,
+        enable_auto_commit=False,
+    )
+    c_evt.subscribe([t_profiles, t_profiles_nio])
+
+    max_points = max(args.points, 100)
+
+    x_len = deque(maxlen=max_points)
+    y_dia = deque(maxlen=max_points)
+    y_hard = deque(maxlen=max_points)
+    y_temp = deque(maxlen=max_points)
+
+    profile_end_positions = deque()
+    nio_end_positions = deque()
 
     total_profiles = 0
     total_nio = 0
     raw_seen = 0
 
+    update_interval = 1.0 / max(args.update_hz, 0.1)
+    last_plot_ts = 0.0
+    last_stat_ts = 0.0
+    draw_idx = 0
+
     plt.ion()
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True, figsize=(13, 8))
+    fig.suptitle("Inline Prozesskontrolle – Live-Visualisierung")
+    fig.tight_layout(rect=[0.02, 0.04, 0.98, 0.95])
 
-    # Figure 1: Diameter
-    fig1, ax1 = plt.subplots()
-    line1, = ax1.plot([], [])
-    ax1.set_xlabel("Drahtlänge [mm]")
+    try:
+        fig.canvas.manager.set_window_title("Inline QC Dashboard")
+    except Exception:
+        pass
+
+    (line_dia,) = ax1.plot([], [], lw=1.0)
     ax1.set_ylabel("Durchmesser [mm]")
-    ax1.set_title("Inline QC – Durchmesser über Drahtlänge")
+    ax1.set_ylim(11.0, 18.0)
+    ax1.grid(True, alpha=0.3)
 
-    # Figure 2: Hardening temperature
-    fig2, ax2 = plt.subplots()
-    line2, = ax2.plot([], [])
-    ax2.set_xlabel("Drahtlänge [mm]")
-    ax2.set_ylabel("Härtetemperatur")
-    ax2.set_title("Inline QC – Härtetemperatur über Drahtlänge")
+    (line_hard,) = ax2.plot([], [], lw=1.0)
+    ax2.set_ylabel("Härtetemp.")
+    ax2.set_ylim(950, 1025)
+    ax2.grid(True, alpha=0.3)
 
-    # Figure 3: Tempering temperature
-    fig3, ax3 = plt.subplots()
-    line3, = ax3.plot([], [])
+    (line_temp,) = ax3.plot([], [], lw=1.0)
+    ax3.set_ylabel("Anlasstemp.")
     ax3.set_xlabel("Drahtlänge [mm]")
-    ax3.set_ylabel("Anlasstemperatur")
-    ax3.set_title("Inline QC – Anlasstemperatur über Drahtlänge")
+    ax3.set_ylim(440, 470)
+    ax3.grid(True, alpha=0.3)
 
-    for f in (fig1, fig2, fig3):
-        f.show()
+    counter_text = fig.text(0.99, 0.98, "", ha="right", va="top")
 
-    last_plot = 0.0
-    last_stat = 0.0
+    plt.show(block=False)
+
+    def trim_event_positions(x_min_visible):
+        while profile_end_positions and profile_end_positions[0] < x_min_visible:
+            profile_end_positions.popleft()
+        while nio_end_positions and nio_end_positions[0] < x_min_visible:
+            nio_end_positions.popleft()
 
     try:
         while True:
-            msg = c.poll(0.2)
-            if msg is None:
-                plt.pause(0.001)
-                continue
+            evt_count = 0
+            while evt_count < args.drain_evt:
+                msg = c_evt.poll(0.0)
+                if msg is None:
+                    break
 
-            if msg["topic"] == t_raw:
+                value = msg["value"] or {}
+                topic = msg["topic"]
+
+                if topic == t_profiles:
+                    total_profiles += 1
+                    wl = value.get("wire_length_end_mm")
+                    if wl is not None:
+                        try:
+                            profile_end_positions.append(float(wl))
+                        except (TypeError, ValueError):
+                            pass
+
+                elif topic == t_profiles_nio:
+                    total_nio += 1
+                    wl = value.get("wire_length_end_mm")
+                    if wl is not None:
+                        try:
+                            nio_end_positions.append(float(wl))
+                        except (TypeError, ValueError):
+                            pass
+
+                evt_count += 1
+
+            raw_count = 0
+            while raw_count < args.drain_raw:
+                msg = c_raw.poll(0.0)
+                if msg is None:
+                    break
+
                 rec = parse_raw_message(msg["value"])
-                L = rec.get("wire_length_mm")
-                D = rec.get("diameter")
-                H = rec.get("hard_temp")
-                T = rec.get("temp_temp")
+                wire_length = rec.get("wire_length_mm")
+                if wire_length is None:
+                    raw_count += 1
+                    continue
 
-                if L is not None:
-                    x_len.append(float(L))
-                    y_dia.append(float(D) if D is not None else float("nan"))
-                    y_hard.append(float(H) if H is not None else float("nan"))
-                    y_temp.append(float(T) if T is not None else float("nan"))
-                    raw_seen += 1
+                raw_seen += 1
 
-            elif msg["topic"] == t_profiles:
-                total_profiles += 1
-            elif msg["topic"] == t_nio:
-                total_nio += 1
+                if raw_seen % max(args.downsample, 1) != 0:
+                    raw_count += 1
+                    continue
 
-            c.commit(msg)
+                try:
+                    x_val = float(wire_length)
+                except (TypeError, ValueError):
+                    raw_count += 1
+                    continue
+
+                x_len.append(x_val)
+
+                diameter = rec.get("diameter")
+                hard_temp = rec.get("hard_temp")
+                temp_temp = rec.get("temp_temp")
+
+                try:
+                    y_dia.append(float(diameter) if diameter is not None else float("nan"))
+                except (TypeError, ValueError):
+                    y_dia.append(float("nan"))
+
+                try:
+                    y_hard.append(float(hard_temp) if hard_temp is not None else float("nan"))
+                except (TypeError, ValueError):
+                    y_hard.append(float("nan"))
+
+                try:
+                    y_temp.append(float(temp_temp) if temp_temp is not None else float("nan"))
+                except (TypeError, ValueError):
+                    y_temp.append(float("nan"))
+
+                if args.x_window_mm is not None and len(x_len) >= 2:
+                    keep_from = x_len[-1] - float(args.x_window_mm)
+                    while x_len and x_len[0] < keep_from:
+                        x_len.popleft()
+                        y_dia.popleft()
+                        y_hard.popleft()
+                        y_temp.popleft()
+
+                raw_count += 1
 
             now = time.time()
 
-            # status every 2s
-            if now - last_stat >= 2.0:
-                print(f"[viz_plot] raw={raw_seen} profiles={total_profiles} nio={total_nio}")
-                last_stat = now
+            if now - last_stat_ts >= 2.0:
+                print("[viz] raw_seen={0} profiles_total={1} profiles_nio_total={2} buffer={3}".format(
+                    raw_seen, total_profiles, total_nio, len(x_len)
+                ))
+                last_stat_ts = now
 
-            # update plots ~2 Hz
-            if now - last_plot >= 0.5 and len(x_len) >= 2:
-                # Diameter
-                line1.set_data(x_len, y_dia)
-                ax1.relim(); ax1.autoscale_view()
-                ax1.set_title(f"Durchmesser | raw={raw_seen} profiles={total_profiles} nio={total_nio}")
+            if len(x_len) >= 2 and (now - last_plot_ts) >= update_interval:
+                draw_idx += 1
 
-                # Hard temp
-                line2.set_data(x_len, y_hard)
-                ax2.relim(); ax2.autoscale_view()
-                ax2.set_title(f"Härtetemperatur | raw={raw_seen} profiles={total_profiles} nio={total_nio}")
+                x_right = x_len[-1]
+                x_left = max(x_len[0], x_right - float(args.x_window_mm))
+                span = max(x_right - x_left, 1.0)
+                pad = max(span * 0.02, 1.0)
 
-                # Tempering temp
-                line3.set_data(x_len, y_temp)
-                ax3.relim(); ax3.autoscale_view()
-                ax3.set_title(f"Anlasstemperatur | raw={raw_seen} profiles={total_profiles} nio={total_nio}")
+                x_min_visible = x_left - pad
+                x_max_visible = x_right + pad
 
-                fig1.canvas.draw_idle()
-                fig2.canvas.draw_idle()
-                fig3.canvas.draw_idle()
+                trim_event_positions(x_min_visible)
+
+                line_dia.set_data(list(x_len), list(y_dia))
+                line_hard.set_data(list(x_len), list(y_hard))
+                line_temp.set_data(list(x_len), list(y_temp))
+
+                if draw_idx == 1 or (draw_idx % max(args.xlim_update_every, 1) == 0):
+                    ax3.set_xlim(x_min_visible, x_max_visible)
+
+                counter_text.set_text(
+                    "COUNTERS\n"
+                    "Rohdaten gesehen:      {0}\n\n"
+                    "Profile gesamt:        {1}\n"
+                    "Profile n.i.O. gesamt: {2}\n\n"
+                    "Profile im Fenster:    {3}\n"
+                    "n.i.O. im Fenster:     {4}\n\n"
+                    "Downsample:            1/{5}\n"
+                    "GUI-Update:            {6:.1f} Hz".format(
+                        raw_seen,
+                        total_profiles,
+                        total_nio,
+                        len(profile_end_positions),
+                        len(nio_end_positions),
+                        max(args.downsample, 1),
+                        args.update_hz,
+                    )
+                )
+
+                fig.canvas.draw()
                 plt.pause(0.001)
 
-                last_plot = now
+                last_plot_ts = now
+            else:
+                plt.pause(0.001)
 
+    except KeyboardInterrupt:
+        print("\n[viz] Beendet durch Benutzer.")
     finally:
-        c.close()
+        try:
+            c_raw.close()
+        except Exception:
+            pass
+        try:
+            c_evt.close()
+        except Exception:
+            pass
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

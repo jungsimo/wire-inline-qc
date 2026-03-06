@@ -1,13 +1,16 @@
 from __future__ import annotations
+
+import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Iterable, Optional, Tuple
 
 from wireqc.services.base_service import BaseStreamService
 from wireqc.io.processdata_parser import parse_raw_message
 from wireqc.streaming.rolling import RollingMeanStd
 
-def _parse_ts_iso(ts: str | None) -> datetime | None:
+
+def _parse_ts_iso(ts: Optional[str]) -> Optional[datetime]:
     if not ts:
         return None
     try:
@@ -18,32 +21,42 @@ def _parse_ts_iso(ts: str | None) -> datetime | None:
     except Exception:
         return None
 
+
 @dataclass
 class MetricAlarmState:
     stats: RollingMeanStd
     in_alarm: bool = False
+
 
 @dataclass
 class AlarmState:
     hard: MetricAlarmState
     temp: MetricAlarmState
 
+
 class AlarmService(BaseStreamService):
-    """
-    Six-Sigma Eingriffsgrenzen: mu ± 3*sigma im gleitenden Fenster.
-    Ereignis: ALARM_START bei erstmaliger Verletzung, ALARM_END bei Rückkehr.
-    """
-    def __init__(self, cfg: dict, window_s: int = 120, sample_hz: int = 10, min_n: int = 50):
+    def __init__(
+        self,
+        cfg: dict,
+        window_s: int = 120,
+        sample_hz: int = 10,
+        min_n: int = 50,
+        group_id: str = "wireqc-alarms",
+        auto_offset_reset: str = "latest",
+    ):
         super().__init__(
             cfg=cfg,
-            group_id="wireqc-alarms",
+            group_id=group_id,
             in_topics=[cfg["topics"]["raw"]],
             parse_fn=parse_raw_message,
+            auto_offset_reset=auto_offset_reset,
+            enable_auto_commit=False,
+            commit_every=50,
         )
         self.out_topic = cfg["topics"]["alarms"]
         self.maxlen = window_s * sample_hz
         self.min_n = min_n
-        self.state: dict[str, AlarmState] = {}
+        self.state = {}
 
     def _ensure_state(self, mid: str) -> AlarmState:
         st = self.state.get(mid)
@@ -55,7 +68,7 @@ class AlarmService(BaseStreamService):
             self.state[mid] = st
         return st
 
-    def _check_metric(self, ts: datetime, machine_id: int, mid: str, metric: str, value: float | None, ms: MetricAlarmState):
+    def _check_metric(self, ts: datetime, machine_id: int, metric: str, value: Optional[float], ms: MetricAlarmState):
         outs = []
         ms.stats.add(value)
 
@@ -69,7 +82,6 @@ class AlarmService(BaseStreamService):
 
         lcl = mu - 3.0 * sd
         ucl = mu + 3.0 * sd
-
         violated = (value is not None) and (value < lcl or value > ucl)
 
         if violated and not ms.in_alarm:
@@ -101,7 +113,7 @@ class AlarmService(BaseStreamService):
 
         return outs
 
-    def handle(self, rec: dict) -> Iterable[tuple[str, dict, str | None]]:
+    def handle(self, rec: dict) -> Iterable[Tuple[str, dict, Optional[str]]]:
         mid = str(rec.get("machine_id") or "unknown")
         machine_id = rec.get("machine_id")
         ts = _parse_ts_iso(rec.get("ts"))
@@ -111,15 +123,33 @@ class AlarmService(BaseStreamService):
         st = self._ensure_state(mid)
 
         out_events = []
-        out_events += self._check_metric(ts, machine_id, mid, "hard_temp", rec.get("hard_temp"), st.hard)
-        out_events += self._check_metric(ts, machine_id, mid, "temp_temp", rec.get("temp_temp"), st.temp)
+        out_events += self._check_metric(ts, machine_id, "hard_temp", rec.get("hard_temp"), st.hard)
+        out_events += self._check_metric(ts, machine_id, "temp_temp", rec.get("temp_temp"), st.temp)
 
         return [(self.out_topic, e, mid) for e in out_events]
 
+
 def main():
     from wireqc.common.config import load_config
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--offset", choices=["earliest", "latest"], default="latest")
+    ap.add_argument("--group", default="wireqc-alarms")
+    ap.add_argument("--window-s", type=int, default=120)
+    ap.add_argument("--sample-hz", type=int, default=10)
+    ap.add_argument("--min-n", type=int, default=50)
+    args = ap.parse_args()
+
     cfg = load_config()
-    AlarmService(cfg).run()
+    AlarmService(
+        cfg,
+        window_s=args.window_s,
+        sample_hz=args.sample_hz,
+        min_n=args.min_n,
+        group_id=args.group,
+        auto_offset_reset=args.offset,
+    ).run()
+
 
 if __name__ == "__main__":
     main()
