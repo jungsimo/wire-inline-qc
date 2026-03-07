@@ -1,8 +1,48 @@
-Lösung: Inline Prozesskontrolle
-Name: Simon Jung  Matrikelnummer: 30400203
+# Lösung: Inline Prozesskontrolle
+
+Name: `Simon Jung`  
+
+Matrikelnummer: `30400203`
 
 # 1. Vorgehensweise und Architektur
 Beschreiben Sie hier kurz wie Sie vorgegangen sind und Ihre gewählte Lösung (verwendete Bibliotheken, Struktur der Services).
+
+Die Lösung wurde als ereignisgetriebene Streaming-Architektur aufgebaut. 
+Ausgangspunkt ist ein kontinuierlicher Rohdatenstrom mit einer Abtastrate von 10 Hz. 
+Für die Hausarbeit wurde dieser Datenstrom mit einem Replay-Producer aus einer 
+bereitgestellten JSON-Datei simuliert und in Kafka geschrieben. Alle weiteren 
+Verarbeitungsschritte konsumieren diese Daten ausschließlich aus Kafka.
+Die Anwendung wurde in mehrere getrennte Services aufgeteilt. Dadurch bleiben 
+die einzelnen Aufgaben fachlich sauber voneinander getrennt und können unabhängig 
+voneinander entwickelt, getestet und gestartet werden. Die wichtigsten Module sind:
+- Replay-Producer (`replay_producer.py`) zur Simulation des Rohdatenstroms
+- Korrelationsservice (`corr_service.py`) zur Berechnung der Korrelation zwischen 
+Geschwindigkeit und Härtetemperatur
+- Alarmservice (`alarm_service.py`) zur Six-Sigma-basierten Schwellwerterkennung für Härtetemperatur 
+und Anlasstemperatur
+- Profilservice (`profile_service.py`) zur Erkennung der Drahtprofile sowie zur n.i.O.-Klassifizierung
+- Visualisierung (`viz_plot_service.py`) zur Darstellung von Durchmesser, Härtetemperatur, Anlasstemperatur 
+sowie der Profil- und n.i.O.-Zähler 
+- weitere Hilfsprogramme zum Entpacken der Daten (`decompress_data.py`), 
+anlegen der Topics (`create_topics.py`) und einige mehr, die jedoch nicht mit der 
+eigentlichen Funktionalität der Anwendung in Verbindung stehen
+
+Für die Implementierung wurden in Python unter anderem folgende Bibliotheken verwendet:
+- `confluent-kafka` für Producer, Consumer und Topic-Verwaltung
+- `pandas` und `matplotlib` für die Offline-Analyse und Visualisierung
+- `PyYAML` für die Konfiguration
+- Standardbibliotheken wie `argparse`, `collections` und `dataclasses` für CLI, 
+Zustandsverwaltung und Service-Struktur
+
+Methodisch wurde zunächst eine Offline-Analyse des Datensatzes durchgeführt, 
+die in `Offline_analysis_qc.ipynb` zu finden ist. 
+Dabei wurden die Signalverläufe, die Profilstruktur, die Stabilität der 
+Segmentlängen, die Korrelation zwischen Geschwindigkeit und Härtetemperatur 
+sowie das Verhalten der Six-Sigma-Grenzen untersucht. Die daraus gewonnenen 
+Erkenntnisse wurden anschließend zur Parametrierung der Streaming-Services 
+verwendet.
+
+
 
 
 # 2. Korrelationsanalyse
@@ -229,6 +269,13 @@ Wie bewerten Sie die Umsetzbarkeit von Echtzeit-Analysen im Bereich
 der Inline-Kontrolle für Mubea. Welche Änderungen müssten an der 
 Ihnen bekannten Architektur vorgenommen werden? 
 Welche Hürden sehen Sie?
+
+## Korrelationsanalyse
+Zur Demonstration der Funktionalität wurde der Replay mit maximaler Geschwindigkeit
+durchlaufen und die Topics `1031103_corr` für die Korrelation mitgelesen. Im Folgenden
+eine Ausschnitt der Logs:
+
+![Korrelation log](pictures/cor_tail.png)
 
 ## Schwellwerterkennung und Ereignisgetriebene Alarmierung
 Zur Demonstration der Funktionalität wurde der Replay mit maximaler Geschwindigkeit
