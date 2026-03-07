@@ -42,6 +42,7 @@ sowie das Verhalten der Six-Sigma-Grenzen untersucht. Die daraus gewonnenen
 Erkenntnisse wurden anschließend zur Parametrierung der Streaming-Services 
 verwendet.
 
+![Architekturskizze](pictures/Architekturskizze.png)
 
 
 
