@@ -8,9 +8,124 @@ Beschreiben Sie hier kurz wie Sie vorgegangen sind und Ihre gewählte Lösung (v
 # 2. Korrelationsanalyse
 Begründen Sie die Wahl Ihres Zeitfensters. Was waren die Herausforderungen bei der Berechnung im Stream?
 
+## Offline Analyse und Parameteruntersuchung
+Für die Untersuchung des Zusammenhangs zwischen Drahtgeschwindigkeit und 
+Härtetemperatur wurde offline zunächst eine Korrelationsanalyse durchgeführt. 
+Als Korrelationsmaß wurde der Pearson-Korrelationskoeffizient gewählt, 
+da beide Größen metrisch sind und ein linearer Zusammenhang effizient auch 
+im Stream berechnet werden kann. Die Offline-Analyse zeigte, dass die Geschwindigkeit 
+im Datensatz nur relativ gering schwankt. Gleichzeitig ist der Prozess insgesamt 
+sehr stabil. Deshalb wurde nicht nur die direkte Korrelation bei gleichem Zeitpunkt 
+betrachtet, sondern zusätzlich eine Lag-Analyse durchgeführt. Dabei wurde geprüft, 
+ob die Härtetemperatur der Geschwindigkeit mit zeitlicher Verzögerung folgt.
+Auch unter Berücksichtigung eines zeitlichen Versatzes ergab sich kein belastbarer 
+linearer Zusammenhang. Die beste gefundene Korrelation lag bei einem Zeitversatz 
+von etwa 27,1 s, der zugehörige Pearson-Wert war jedoch `< +- 0,005`, 
+also praktisch kein linearer Zusammenhang. 
+
+![Lag Korrelation](pictures/lag_cor_speed_temp.png)
+
+Daraus wurde geschlossen, 
+dass im vorliegenden Datensatz kein sinnvoll nutzbarer linearer Zusammenhang 
+zwischen Geschwindigkeit und Härtetemperatur nachweisbar ist.
+
+Für die Fensterwahl wurde die zuvor aus der Profilanalyse abgeleitete typische 
+Profilperiode herangezogen. Ein vollständiges Profil dauert im Mittel etwa 
+101 s und umfasst ungefähr 1012 Rohwerte. Auch hier zeigt sich kein Zusammenhang 
+(`r_max = 0,08`). 
+
+![Korrelation über Profillänge](pictures/cor_over_profil_ID.png)
+
+Deshalb wurde für die Live-Analyse 
+ein Korrelationsfenster gewählt, das ungefähr einer Profilperiode entspricht. 
+Dadurch wird ein fachlich sinnvoller lokaler Zusammenhang untersucht, ohne zu 
+stark über mehrere Profile zu mitteln.
+
+## Umsetzung im Stream-Prozess
+Die Korrelationsanalyse wurde als eigener Streaming-Service umgesetzt. 
+Der Service konsumiert die Rohdaten aus Kafka und führt für jedes Gerät ein 
+gleitendes Fenster über Geschwindigkeit und Härtetemperatur. Aus diesem Fenster wird 
+fortlaufend der Pearson-Korrelationskoeffizient berechnet und in ein separates 
+Kafka-Topic `1031103_corr` geschrieben.
+
+Da die Offline-Analyse bereits gezeigt hat, dass die Korrelation im Datensatz sehr gering ist, wurde das Ergebnis im Live-System bewusst nicht als Alarm, sondern als fortlaufender Analysewert behandelt. Zusätzlich werden im Ausgabeevent auch die Streuungen von Geschwindigkeit und Härtetemperatur im aktuellen Fenster ausgegeben. Das ist wichtig, weil der Pearson-Koeffizient bei sehr kleiner Varianz wenig aussagekräftig sein kann.
+
+Die Live-Implementierung dient damit nicht primär der Alarmierung, sondern der kontinuierlichen quantitativen Bewertung, ob im laufenden Prozess ein linearer Zusammenhang zwischen Geschwindigkeit und Härtetemperatur vorliegt. Im vorliegenden Datensatz bestätigte die Online-Berechnung die Offline-Ergebnisse: Die Korrelation blieb durchgehend sehr klein und zeigte keinen stabilen linearen Zusammenhang.
+
+
 
 # 3. Schwellwerterkennung (Six Sigma)
-Wie haben Sie die "Running Statistics" (Mittelwert/StdDev) implementiert? Wie gehen Sie mit der Initialisierung um?
+Wie haben Sie die "Running Statistics" (Mittelwert/StdDev) implementiert? 
+Wie gehen Sie mit der Initialisierung um?
+
+## 3.1 ) Offline Analyse
+Für die Schwellwerterkennung wurden die beiden Prozessgrößen Härtetemperatur 
+und Anlasstemperatur offline mit einem Six-Sigma-Verfahren untersucht. 
+Ziel war es, eine Fenstergröße und eine Alarmlogik zu finden, die auch im 
+laufenden Betrieb sinnvoll eingesetzt werden kann. Als Grundlage wurde ein 
+gleitendes Fenster von 5 Minuten gewählt. Bei einer Abtastrate von 10 Hz 
+entspricht dies 3000 Messwerten. Für jeden neuen Messwert wurden Mittelwert und 
+Standardabweichung aus dem vorherigen Fenster berechnet. Die Eingriffsgrenzen 
+ergeben sich dann aus:
+
+- Untergrenze = Mittelwert − 3 · Standardabweichung
+- Obergrenze = Mittelwert + 3 · Standardabweichung
+
+Die ersten 3000 Werte wurden als Anlaufphase behandelt. 
+In dieser Zeit wird die Statistik aufgebaut, aber es wird noch kein Alarm 
+ausgelöst. Im Realbetrieb könnte man hier auf globale Mittelwerte aus vorangegangenen 
+Werten zurückgreifen.
+In einem ersten Test wurde jeder einzelne Grenzwertverstoß sofort 
+betrachtet. Die Offline-Analyse zeigte jedoch, dass dies zu sehr vielen kurzen 
+Alarmen führt. Deshalb wurde zusätzlich eine Persistenzbedingung untersucht. 
+Ein Alarm wird dabei erst dann ausgelöst, wenn mehrere aufeinanderfolgende Werte 
+außerhalb der Eingriffsgrenzen liegen. 
+
+Es wurden verschiedene Werte für die Persistenz getestet 
+(persist_n = 5, 10, 15, 30). Die Auswertung desselben Signalausschnitts zeigte:
+
+Anlasstemperatur:
+
+![Persistenzvergleich Anlasstemperatur](pictures/Persistenzvergleich_Anlasstemp.png)
+
+Härtetemperatur:
+![Persistenzvergleich Anlasstemperatur](pictures/Persistenzvergleich_Haertetemp.png)
+
+Schlussfolgerung:
+- kleine Persistenzwerte führen zu sehr vielen kurzen Alarmen
+- große Persistenzwerte unterdrücken kurze Ausschläge deutlich
+- persist_n = 30 ist bereits sehr streng und blendet insbesondere bei der 
+Anlasstemperatur fast alle Ereignisse aus
+- persist_n = 15 stellt einen sinnvollen Kompromiss zwischen Empfindlichkeit und Stabilität dar.
+
+Damit wurde für die Live-Anwendung entschieden:
+- Fenstergröße: 5 Minuten
+- Anlauffenster: 5 Minuten
+- Persistenz: 15 aufeinanderfolgende Grenzwertverletzungen
+
+Bei 10 Hz entspricht persist_n = 15 einer Zeit von 1,5 Sekunden. 
+Ein Alarm wird also nur dann ausgelöst, wenn eine Abweichung nicht nur kurzzeitig, 
+sondern über einen etwas längeren Zeitraum anhält. Diese Größe ist jedoch stark von
+den internen Qualitätsvorgaben abhängig.
+
+## Umsetzung im Stream-Prozess
+Die Schwellwerterkennung wurde als eigener Streaming-Service umgesetzt. 
+Der Service konsumiert kontinuierlich die Rohdaten aus Kafka und überwacht 
+dabei Härtetemperatur und Anlasstemperatur getrennt.
+Für jede Messgröße wird ein eigenes gleitendes Fenster geführt. Aus diesem Fenster 
+werden fortlaufend Mittelwert und Standardabweichung berechnet. 
+Wichtig ist dabei, dass der aktuelle Messwert zuerst gegen die 
+Statistik des bisherigen Fensters geprüft und erst danach in das Fenster 
+aufgenommen wird. Dadurch beeinflusst ein möglicher Ausreißer nicht sofort 
+seine eigene Bewertung. Wird die Eingriffsgrenze über mindestens 15 
+aufeinanderfolgende Werte verletzt, erzeugt der Service ein Alarmereignis und 
+sendet dieses in das Kafka-Topic `1031103_801` für Alarme. Sobald der Messwert wieder 
+innerhalb der berechneten Grenzen liegt, wird ein entsprechendes 
+"Alarm-Ende-Ereignis" erzeugt. Die Schwellwerterkennung erfolgt vollständig im 
+Stream und ohne nachgelagerte Batch-Auswertung. Gleichzeitig reduziert die zusätzliche 
+Persistenzbedingung die Zahl kurzer Fehlalarme deutlich und macht die 
+Alarmierung für eine Inline-Kontrolle wesentlich robuster.
+
 
 
 # 4. Profilerkennung
@@ -105,6 +220,13 @@ der Inline-Kontrolle für Mubea. Welche Änderungen müssten an der
 Ihnen bekannten Architektur vorgenommen werden? 
 Welche Hürden sehen Sie?
 
+## Schwellwerterkennung und Ereignisgetriebene Alarmierung
+Zur Demonstration der Funktionalität wurde der Replay mit maximaler Geschwindigkeit
+durchlaufen und die Topics `1031103_801` für die Alarmierung mitgelesen. Im Folgenden
+eine Ausschnitt der Logs:
+
+![Alarm log](pictures/tail_alarm.png)
+
 ## Profilerkennung und n.i.O.-Klassifizierung
 Zur Demonstration der Funktionalität wurde der Replay mit maximaler Geschwindigkeit
 durchlaufen und die Topics `1031103_profiles` und `1031103_profiles_nio` ausgegeben.
@@ -112,3 +234,4 @@ durchlaufen und die Topics `1031103_profiles` und `1031103_profiles_nio` ausgege
 ![Profil Topic](pictures/test_run_Profil_detection.png)
 
 ![Profil n.i.O Topic](pictures/test_run_Profil_niO_detection.png)
+
