@@ -13,7 +13,9 @@ Für die Untersuchung des Zusammenhangs zwischen Drahtgeschwindigkeit und
 Härtetemperatur wurde offline zunächst eine Korrelationsanalyse durchgeführt. 
 Als Korrelationsmaß wurde der Pearson-Korrelationskoeffizient gewählt, 
 da beide Größen metrisch sind und ein linearer Zusammenhang effizient auch 
-im Stream berechnet werden kann. Die Offline-Analyse zeigte, dass die Geschwindigkeit 
+im Stream berechnet werden kann. Die Spearmann-Korrelation ist hierbei wesentlich
+rechenintersiver, da diese auf Rängen basiert, die eine Sortierung pro Fenster erfordern.
+Die Offline-Analyse zeigte, dass die Geschwindigkeit 
 im Datensatz nur relativ gering schwankt. Gleichzeitig ist der Prozess insgesamt 
 sehr stabil. Deshalb wurde nicht nur die direkte Korrelation bei gleichem Zeitpunkt 
 betrachtet, sondern zusätzlich eine Lag-Analyse durchgeführt. Dabei wurde geprüft, 
@@ -21,7 +23,8 @@ ob die Härtetemperatur der Geschwindigkeit mit zeitlicher Verzögerung folgt.
 Auch unter Berücksichtigung eines zeitlichen Versatzes ergab sich kein belastbarer 
 linearer Zusammenhang. Die beste gefundene Korrelation lag bei einem Zeitversatz 
 von etwa 27,1 s, der zugehörige Pearson-Wert war jedoch `< +- 0,005`, 
-also praktisch kein linearer Zusammenhang. 
+also praktisch kein linearer Zusammenhang. Auch die Spearmann-Korrelation wurde 
+der Vollständigkeithalber untersucht, lieferte aber nur Werte nahe 0.
 
 ![Lag Korrelation](pictures/lag_cor_speed_temp.png)
 
@@ -44,15 +47,22 @@ stark über mehrere Profile zu mitteln.
 ## Umsetzung im Stream-Prozess
 Die Korrelationsanalyse wurde als eigener Streaming-Service umgesetzt. 
 Der Service konsumiert die Rohdaten aus Kafka und führt für jedes Gerät ein 
-gleitendes Fenster über Geschwindigkeit und Härtetemperatur. Aus diesem Fenster wird 
-fortlaufend der Pearson-Korrelationskoeffizient berechnet und in ein separates 
-Kafka-Topic `1031103_corr` geschrieben.
+gleitendes Fenster von `n = 1000` über Geschwindigkeit und Härtetemperatur. 
+Aus diesem Fenster wird fortlaufend der Pearson-Korrelationskoeffizient berechnet und 
+in ein separates Kafka-Topic `1031103_corr` geschrieben. Da die Offline-Analyse 
+bereits gezeigt hat, 
+dass die Korrelation im Datensatz sehr gering ist, wurde das Ergebnis 
+im Live-System bewusst nicht als Alarm, sondern als fortlaufender Analysewert 
+behandelt. Zusätzlich werden im Ausgabeevent auch die Streuungen von Geschwindigkeit 
+und Härtetemperatur im aktuellen Fenster ausgegeben. Das ist wichtig, weil der 
+Pearson-Koeffizient bei sehr kleiner Varianz wenig aussagekräftig sein kann.
 
-Da die Offline-Analyse bereits gezeigt hat, dass die Korrelation im Datensatz sehr gering ist, wurde das Ergebnis im Live-System bewusst nicht als Alarm, sondern als fortlaufender Analysewert behandelt. Zusätzlich werden im Ausgabeevent auch die Streuungen von Geschwindigkeit und Härtetemperatur im aktuellen Fenster ausgegeben. Das ist wichtig, weil der Pearson-Koeffizient bei sehr kleiner Varianz wenig aussagekräftig sein kann.
-
-Die Live-Implementierung dient damit nicht primär der Alarmierung, sondern der kontinuierlichen quantitativen Bewertung, ob im laufenden Prozess ein linearer Zusammenhang zwischen Geschwindigkeit und Härtetemperatur vorliegt. Im vorliegenden Datensatz bestätigte die Online-Berechnung die Offline-Ergebnisse: Die Korrelation blieb durchgehend sehr klein und zeigte keinen stabilen linearen Zusammenhang.
-
-
+Die Live-Implementierung dient damit nicht primär der Alarmierung, sondern 
+der kontinuierlichen quantitativen Bewertung, ob im laufenden Prozess ein 
+linearer Zusammenhang zwischen Geschwindigkeit und Härtetemperatur vorliegt. 
+Im vorliegenden Datensatz bestätigte die Online-Berechnung die Offline-Ergebnisse. 
+Die Korrelation blieb durchgehend sehr klein und zeigte keinen stabilen 
+linearen Zusammenhang.
 
 # 3. Schwellwerterkennung (Six Sigma)
 Wie haben Sie die "Running Statistics" (Mittelwert/StdDev) implementiert? 
