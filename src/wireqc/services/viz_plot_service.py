@@ -226,9 +226,9 @@ def main():
                     "Rohdaten gesehen:      {0}\n\n"
                     "Profile gesamt:        {1}\n"
                     "Profile n.i.O. gesamt: {2}\n\n"
-                    "Profile im Fenster:    {3}\n"
-                    "n.i.O. im Fenster:     {4}\n\n"
-                    "Downsample:            1/{5}\n"
+                    #"Profile im Fenster:    {3}\n"
+                    #"n.i.O. im Fenster:     {4}\n\n"
+                    #"Downsample:            1/{5}\n"
                     "GUI-Update:            {6:.1f} Hz".format(
                         raw_seen,
                         total_profiles,

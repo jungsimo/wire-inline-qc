@@ -109,7 +109,7 @@ linearen Zusammenhang.
 Wie haben Sie die "Running Statistics" (Mittelwert/StdDev) implementiert? 
 Wie gehen Sie mit der Initialisierung um?
 
-## 3.1 ) Offline Analyse
+## Offline Analyse
 Für die Schwellwerterkennung wurden die beiden Prozessgrößen Härtetemperatur 
 und Anlasstemperatur offline mit einem Six-Sigma-Verfahren untersucht. 
 Ziel war es, eine Fenstergröße und eine Alarmlogik zu finden, die auch im 
@@ -213,8 +213,6 @@ erweitert um:
 - eine Steigungsbedingung für den Start des Anstiegs
 - einen Plausibilitätsfilter für erkannte Profile
 
-
-
 Die Offline-Analyse ergab für die plausiblen Profile sehr stabile Werte:
 - L1 ca. 5723 mm
 - L2 ca. 962 mm
@@ -264,6 +262,28 @@ die erwarteten Mittelwerte sowie die berechneten Abweichungen.
 Dadurch können nachgelagerte Module diese Ereignisse direkt aus 
 Kafka konsumieren, ohne eng an die Profilerkennung gekoppelt zu sein.
 
+## Visualisierung
+
+Die Visualisierung wurde als eigenes Streaming-Modul umgesetzt und konsumiert ihre Daten 
+ausschließlich aus Kafka. Damit bleibt sie von der eigentlichen Analyse- und Erkennungslogik 
+entkoppelt. Die Visualisierung liest zwei Arten von Informationen:
+- Rohdaten aus dem Topic raw (`1031103_1000`), um die Verläufe von Durchmesser, Härtetemperatur 
+und Anlasstemperatur jeweils über der Drahtlänge darzustellen
+- Ereignisdaten aus den Topics profiles (`1031103_profiles`) und profiles_nio (`1031103_profiles_nio`),
+um zusätzlich die Gesamtzahl  erkannter Profile und die Anzahl der n.i.O.-Profile anzuzeigen
+
+Für die Darstellung wurde ein gleitendes Sichtfenster über der Drahtlänge verwendet. 
+Dadurch werden nur die letzten relevanten Prozessdaten angezeigt, was die Visualisierung 
+auch bei kontinuierlichem Streaming stabil und reaktionsfähig hält. Die Aktualisierung 
+erfolgt mit einer begrenzten Bildrate, damit die Anzeige flüssig bleibt und der Kafka-Consumer 
+nicht durch unnötig häufiges Neuzeichnen ausgebremst wird. Ein wichtiger Punkt war die 
+saubere Trennung zwischen laufender Rohdatenvisualisierung und diskreten Ereignissen. 
+Die Rohdaten werden direkt aus dem Rohdaten-Topic geplottet, während die Profil- 
+und n.i.O.-Zähler aus den von der Profilerkennung erzeugten Kafka-Events stammen. 
+
+![Live Plot](pictures/screenshot_Live_plot.png)
+
+
 # 5. Ergebnisse
 Fügen Sie hier Logs ein, die zeigen, dass Ihr System Anomalien erkennt. 
 Wie bewerten Sie die Umsetzbarkeit von Echtzeit-Analysen im Bereich 
@@ -271,21 +291,64 @@ der Inline-Kontrolle für Mubea. Welche Änderungen müssten an der
 Ihnen bekannten Architektur vorgenommen werden? 
 Welche Hürden sehen Sie?
 
-## Korrelationsanalyse
+Die entwickelte Lösung konnte die drei Analysebausteine unter Streaming-Bedingungen 
+erfolgreich umsetzen. Die Rohdaten wurden kontinuierlich über Kafka verarbeitet, ohne dass 
+eine nachgelagerte Batch-Auswertung notwendig war. Alle Analyseergebnisse wurden als eigene 
+Kafka-Ereignisse bereitgestellt und konnten dadurch von weiteren Modulen, insbesondere der 
+Visualisierung, direkt konsumiert werden. 
+
+Im Bereich der Profilerkennung wurden nach robuster 
+Segmentierung und Plausibilitätsprüfung 828 gültige Profile erkannt. Nach einer Warm-up-Phase 
+von 20 Profilen wurden 808 Profile gegen den laufenden Mittelwert bewertet. Davon wurden 
+31 Profile als n.i.O. klassifiziert. Die Abweichungen 
+traten im vorliegenden Datensatz ausschließlich bei der Segmentlänge L1 auf, während L2, L3 
+und L4 innerhalb der Toleranz von +-30 mm blieben. Zusätzlich wurden n.i.O.-Profile als eigene 
+Ereignisse in das Kafka-Topic `1031103_profiles_nio` geschrieben.
+
+Die Schwellwerterkennung für Härtetemperatur und Anlasstemperatur wurde auf Basis 
+eines 5-Minuten-Fensters umgesetzt. Die Offline-Analyse zeigte, dass eine reine Punktbewertung 
+zu sehr vielen kurzen Alarmen führte. Deshalb wurde für die Live-Anwendung zusätzlich eine 
+Persistenzbedingung eingeführt. Dadurch wurde die Alarmierung robuster gegenüber kurzzeitigen 
+Grenzverletzungen und sind damit besser für eine Inline-Kontrolle geeignet. Die Zulässigkeit
+der Persistenz hängt jedoch stark von den Qualitätsanforderungen bei Mubea ab.
+
+Die Korrelationsanalyse zwischen Geschwindigkeit und Härtetemperatur ergab sowohl offline als 
+auch im Streaming-Betrieb nur sehr geringe Werte. Damit konnte im vorliegenden Datensatz kein 
+belastbarer linearer Zusammenhang nachgewiesen werden.
+
+Die Umsetzung in Echtzeit ist für die gegebene Datenrate von 10 Hz grundsätzlich gut mit
+dieser Architektur umsetzbar. 
+Die größte Herausforderung lag in der robusten Zustandsführung, 
+der Initialisierung von gleitenden Statistiken, der Behandlung von Randfällen bei der 
+Profilerkennung und der Vermeidung von Fehlalarmen. Für einen produktiven Einsatz bei 
+Mubea wären insbesondere folgende Erweiterungen sinnvoll:
+- persistente Zustände bzw. Checkpointing für laufende Fenster und Zustandsautomaten
+- Monitoring der Services und Kafka-Consumer-Lags
+- konfigurierbare Parameter je Produkt
+- zusätzliche Topics für Zustandsinformationen, z. B. aktuellen Profilstatus
+- ein strukturiertes Handling von Alarmen
+
+Als wesentliche Hürden sind driftende Referenzwerte, Neustarts laufender 
+Services sowie die Trennung zwischen relevanten Alarmen und kurzzeitigen 
+Signalabweichungen zu sehen. Insgesamt zeigt die Arbeit jedoch, dass eine Inline-Kontrolle 
+mit Streaming-Technologien für den betrachteten Anwendungsfall grundsätzlich umsetzbar ist.
+
+## Logs
+### Korrelationsanalyse
 Zur Demonstration der Funktionalität wurde der Replay mit maximaler Geschwindigkeit
 durchlaufen und die Topics `1031103_corr` für die Korrelation mitgelesen. Im Folgenden
 eine Ausschnitt der Logs:
 
 ![Korrelation log](pictures/cor_tail.png)
 
-## Schwellwerterkennung und Ereignisgetriebene Alarmierung
+### Schwellwerterkennung und Ereignisgetriebene Alarmierung
 Zur Demonstration der Funktionalität wurde der Replay mit maximaler Geschwindigkeit
 durchlaufen und die Topics `1031103_801` für die Alarmierung mitgelesen. Im Folgenden
 eine Ausschnitt der Logs:
 
 ![Alarm log](pictures/tail_alarm.png)
 
-## Profilerkennung und n.i.O.-Klassifizierung
+### Profilerkennung und n.i.O.-Klassifizierung
 Zur Demonstration der Funktionalität wurde der Replay mit maximaler Geschwindigkeit
 durchlaufen und die Topics `1031103_profiles` und `1031103_profiles_nio` ausgegeben.
 
