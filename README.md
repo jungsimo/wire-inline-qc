@@ -42,7 +42,7 @@ pip install -e .
 docker compose up -d
 ```
 
-## 3. Datensatz vorbereiten
+## Datensatz vorbereiten
 
 Falls der Datensatz im Verzeichnis 
 `data/` **nur als `.gz`-Datei** vorliegt, muss er vor dem Replay entpackt werden.
@@ -144,4 +144,4 @@ $ts = Get-Date -Format "yyyyMMdd-HHmmss"
 - `alarms` – Six-Sigma-Alarmservice
 - `profiles` – Profilerkennung + n.i.O.-Klassifizierung
 - `viz-plot` – Live-Visualisierung
-- `src/tools/tail_topic.py` – Mitlesen einzelner Kafka-Topics
+- `tail-topic` – Mitlesen einzelner Kafka-Topics
