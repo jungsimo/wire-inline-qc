@@ -94,13 +94,6 @@ behandelt. Zusätzlich werden im Ausgabeevent auch die Streuungen von Geschwindi
 und Härtetemperatur im aktuellen Fenster ausgegeben. Das ist wichtig, weil der 
 Pearson-Koeffizient bei sehr kleiner Varianz wenig aussagekräftig sein kann.
 
-Die Live-Implementierung dient damit nicht primär der Alarmierung, sondern 
-der kontinuierlichen quantitativen Bewertung, ob im laufenden Prozess ein 
-linearer Zusammenhang zwischen Geschwindigkeit und Härtetemperatur vorliegt. 
-Im vorliegenden Datensatz bestätigte die Online-Berechnung die Offline-Ergebnisse. 
-Die Korrelation blieb durchgehend sehr klein und zeigte keinen stabilen 
-linearen Zusammenhang.
-
 # 3. Schwellwerterkennung (Six Sigma)
 ## Offline Analyse
 Für die Schwellwerterkennung wurden die beiden Prozessgrößen Härtetemperatur 
@@ -179,7 +172,6 @@ den vier Segmenten LOW, RISE, HIGH und FALL und wird erst dann als erkannt
 gezählt, wenn die Folge LOW -> RISE -> HIGH -> FALL -> LOW vollständig 
 durchlaufen wurde. Dadurch können die Segmentlängen L1 bis L4 eindeutig 
 aus den Drahtlängen an den Zustandswechseln berechnet werden.
-
 Die Erkennung der Knees (Beginn und Ende der Plateaus bzw. Übergänge)
 erfolgt über Schwellwerte mit Hysterese auf dem geglätteten Durchmessersignal.
 Verwendet wurden die Grenzen `low_entry`, `low_exit`, `high_entry` 
@@ -187,7 +179,6 @@ und `high_exit`. Der Übergang von LOW nach RISE wird nur dann zugelassen,
 wenn zuvor ein stabiler LOW-Bereich erkannt wurde und zusätzlich 
 eine positive lokale Steigung vorliegt. Dadurch wird verhindert, 
 dass ein Profilstart mitten in einem Übergang fälschlich erkannt wird.
-
 Ausgangspunkt war eine einfache FSM mit festen Schwellwerten auf dem Rohsignal.
 Die Offline-Analyse zeigte jedoch, dass diese Variante an Start- und 
 Randbereichen fehleranfällig war. Es traten unplausible Segmentierungen auf, 
@@ -204,7 +195,7 @@ erweitert um:
 - eine Steigungsbedingung für den Start des Anstiegs
 - einen Plausibilitätsfilter für erkannte Profile
 
-Die Offline-Analyse ergab für die plausiblen Profile sehr stabile Werte:
+Die Offline-Analyse ergab für die plausiblen Profile:
 - L1 ca. 5723 mm
 - L2 ca. 962 mm
 - L3 ca. 226 mm
@@ -295,18 +286,16 @@ zu sehr vielen kurzen Alarmen führte. Deshalb wurde für die Live-Anwendung zus
 Persistenzbedingung eingeführt. Dadurch wurde die Alarmierung robuster gegenüber kurzzeitigen 
 Grenzverletzungen und sind damit besser für eine Inline-Kontrolle geeignet. Die Zulässigkeit
 der Persistenz hängt jedoch stark von den Qualitätsanforderungen bei Mubea ab.
-
 Die Korrelationsanalyse zwischen Geschwindigkeit und Härtetemperatur ergab sowohl offline als 
 auch im Streaming-Betrieb nur sehr geringe Werte. Damit konnte im vorliegenden Datensatz kein 
 belastbarer linearer Zusammenhang nachgewiesen werden.
-
 Die Umsetzung in Echtzeit ist für die gegebene Datenrate von 10 Hz grundsätzlich gut mit
 dieser Architektur umsetzbar. 
 Die größte Herausforderung lag in der robusten Zustandsführung, 
 der Initialisierung von gleitenden Statistiken, der Behandlung von Randfällen bei der 
 Profilerkennung und der Vermeidung von Fehlalarmen. Für einen produktiven Einsatz bei 
 Mubea wären insbesondere folgende Erweiterungen sinnvoll:
-- persistente Zustände bzw. Checkpointing für laufende Fenster und Zustandsautomaten
+- Checkpointing für laufende Fenster und Zustände
 - Monitoring der Services und Kafka-Consumer-Lags
 - konfigurierbare Parameter je Produkt
 - zusätzliche Topics für Zustandsinformationen, z. B. aktuellen Profilstatus
