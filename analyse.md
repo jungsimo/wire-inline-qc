@@ -5,8 +5,6 @@ Name: `Simon Jung`
 Matrikelnummer: `30400203`
 
 # 1. Vorgehensweise und Architektur
-Beschreiben Sie hier kurz wie Sie vorgegangen sind und Ihre gewählte Lösung (verwendete Bibliotheken, Struktur der Services).
-
 Die Lösung wurde als ereignisgetriebene Streaming-Architektur aufgebaut. 
 Ausgangspunkt ist ein kontinuierlicher Rohdatenstrom mit einer Abtastrate von 10 Hz. 
 Für die Hausarbeit wurde dieser Datenstrom mit einem Replay-Producer aus einer 
@@ -24,8 +22,8 @@ und Anlasstemperatur
 - Visualisierung (`viz_plot_service.py`) zur Darstellung von Durchmesser, Härtetemperatur, Anlasstemperatur 
 sowie der Profil- und n.i.O.-Zähler 
 - weitere Hilfsprogramme zum Entpacken der Daten (`decompress_data.py`), 
-anlegen der Topics (`create_topics.py`) und einige mehr, die jedoch nicht mit der 
-eigentlichen Funktionalität der Anwendung in Verbindung stehen
+anlegen der Topics (`create_topics.py`) und einige mehr, die jedoch nicht zu den
+eigentlichen Analysefunktionen der Anwendung gehören
 
 Für die Implementierung wurden in Python unter anderem folgende Bibliotheken verwendet:
 - `confluent-kafka` für Producer, Consumer und Topic-Verwaltung
@@ -47,9 +45,7 @@ verwendet.
 
 
 # 2. Korrelationsanalyse
-Begründen Sie die Wahl Ihres Zeitfensters. Was waren die Herausforderungen bei der Berechnung im Stream?
-
-## Offline Analyse und Parameteruntersuchung
+## Offline Analyse
 Für die Untersuchung des Zusammenhangs zwischen Drahtgeschwindigkeit und 
 Härtetemperatur wurde offline zunächst eine Korrelationsanalyse durchgeführt. 
 Als Korrelationsmaß wurde der Pearson-Korrelationskoeffizient gewählt, 
@@ -63,8 +59,8 @@ betrachtet, sondern zusätzlich eine Lag-Analyse durchgeführt. Dabei wurde gepr
 ob die Härtetemperatur der Geschwindigkeit mit zeitlicher Verzögerung folgt.
 Auch unter Berücksichtigung eines zeitlichen Versatzes ergab sich kein belastbarer 
 linearer Zusammenhang. Die beste gefundene Korrelation lag bei einem Zeitversatz 
-von etwa 27,1 s, der zugehörige Pearson-Wert war jedoch `< +- 0,005`, 
-also praktisch kein linearer Zusammenhang. Auch die Spearmann-Korrelation wurde 
+von etwa 27,1 s, der zugehörige Pearson-Wert war jedoch `|r| <  0,005`, 
+also praktisch kein linearer Zusammenhang. Auch die Spearman-Korrelation wurde 
 der Vollständigkeithalber untersucht, lieferte aber nur Werte nahe 0.
 
 ![Lag Korrelation](pictures/lag_cor_speed_temp.png)
@@ -106,9 +102,6 @@ Die Korrelation blieb durchgehend sehr klein und zeigte keinen stabilen
 linearen Zusammenhang.
 
 # 3. Schwellwerterkennung (Six Sigma)
-Wie haben Sie die "Running Statistics" (Mittelwert/StdDev) implementiert? 
-Wie gehen Sie mit der Initialisierung um?
-
 ## Offline Analyse
 Für die Schwellwerterkennung wurden die beiden Prozessgrößen Härtetemperatur 
 und Anlasstemperatur offline mit einem Six-Sigma-Verfahren untersucht. 
@@ -140,7 +133,7 @@ Anlasstemperatur:
 ![Persistenzvergleich Anlasstemperatur](pictures/Persistenzvergleich_Anlasstemp.png)
 
 Härtetemperatur:
-![Persistenzvergleich Anlasstemperatur](pictures/Persistenzvergleich_Haertetemp.png)
+![Persistenzvergleich Härtetemperatur](pictures/Persistenzvergleich_Haertetemp.png)
 
 Schlussfolgerung:
 - kleine Persistenzwerte führen zu sehr vielen kurzen Alarmen
@@ -180,8 +173,6 @@ Alarmierung für eine Inline-Kontrolle wesentlich robuster.
 
 
 # 4. Profilerkennung
-Beschreiben Sie Ihren Algorithmus zur Segmentierung der Daten. Wie erkennen Sie "Knees" (Start/Ende von Plateaus)?
-
 Zur Erkennung der Drahtprofile wurde ein zustandsbasierter Algorithmus 
 (Finite State Machine) verwendet. Ein vollständiges Profil besteht aus 
 den vier Segmenten LOW, RISE, HIGH und FALL und wird erst dann als erkannt 
@@ -223,7 +214,7 @@ Die Offline-Analyse ergab für die plausiblen Profile sehr stabile Werte:
 - ca. 1012 Rohwerte pro Profil
 
 Damit erwies sich der FSM-Ansatz als gut geeignet für die Streaming-Aufgabe. 
-Die größte Herausforderung lag nicht in der Rechenzeit, sondern in der 
+Die größte Herausforderung lag in der 
 robusten Initialisierung und Synchronisation des Zustands.
 
 ## n.i.O-Klassifizierung der Profile
@@ -231,7 +222,7 @@ Nach robuster Profilerkennung und Plausibilitätsfilterung wurden 828
 gültige Profile identifiziert. Nach einer Anlaufphase von 20 Profilen 
 wurden 808 Profile gegen den laufenden Mittelwert geprüft. 
 31 Profile wurden als n.i.O. klassifiziert. In allen n.i.O.-Fällen war 
-ausschließlich die Länge L1 außerhalb der Toleranz von ±30 mm, 
+ausschließlich die Länge L1 außerhalb der Toleranz von +-30 mm, 
 während L2, L3 und L4 innerhalb der zulässigen Abweichung blieben. 
 Daraus lässt sich schließen, dass die größte Variabilität im Datensatz 
 im Bereich des Plateaus liegt. Im Folgenden ist die Toleranzabweichung 
@@ -243,8 +234,7 @@ Profilerkennung integriert. Nachdem ein vollständiges Profil erkannt und
 die Segmentlängen L1 bis L4 berechnet wurden, wird das Profil zunächst auf 
 Plausibilität geprüft. Nur gültige Profile werden anschließend für die 
 weitere Bewertung verwendet. Für die Bewertung wird je Segmentlänge ein 
-laufender Mittelwert über die bisher erkannten gültigen Profile geführt 
-(5 Werte zur leichten Glättung).
+laufender Mittelwert über die bisher erkannten gültigen Profile geführt.
 Eine Anlaufphase von 20 Profilen verhindert, dass instabile Anfangswerte 
 zu Fehlklassifikationen führen. Ein Profil wird als n.i.O.
 eingestuft, wenn mindestens eine der vier Längen um mehr als +-30 mm vom 
@@ -285,12 +275,6 @@ und n.i.O.-Zähler aus den von der Profilerkennung erzeugten Kafka-Events stamme
 
 
 # 5. Ergebnisse
-Fügen Sie hier Logs ein, die zeigen, dass Ihr System Anomalien erkennt. 
-Wie bewerten Sie die Umsetzbarkeit von Echtzeit-Analysen im Bereich 
-der Inline-Kontrolle für Mubea. Welche Änderungen müssten an der 
-Ihnen bekannten Architektur vorgenommen werden? 
-Welche Hürden sehen Sie?
-
 Die entwickelte Lösung konnte die drei Analysebausteine unter Streaming-Bedingungen 
 erfolgreich umsetzen. Die Rohdaten wurden kontinuierlich über Kafka verarbeitet, ohne dass 
 eine nachgelagerte Batch-Auswertung notwendig war. Alle Analyseergebnisse wurden als eigene 
